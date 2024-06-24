@@ -1,8 +1,8 @@
 import json
 import os
-from services.logger import setup_logger
-from services.tool_registry import ToolFile
-from api.error_utilities import VideoTranscriptError, InputValidationError, ToolExecutorError
+from app.services.logger import setup_logger
+from app.services.tool_registry import ToolFile
+from app.api.error_utilities import VideoTranscriptError, InputValidationError, ToolExecutorError
 from typing import Dict, Any, List
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -32,9 +32,16 @@ def load_tool_metadata(tool_id):
         logger.error(f"No tool configuration found for tool_id: {tool_id}")
         raise HTTPException(status_code=404, detail="Tool configuration not found")
     
-    # The path to the module needs to be split and only the directory path should be used.
-    module_dir_path = '/'.join(tool_config['path'].split('.')[:-1])  # This removes the last segment (core)
-    file_path = os.path.join(os.getcwd(), module_dir_path, tool_config['metadata_file'])
+    # Ensure the base path is relative to the current file's directory
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    logger.debug(f"Base directory: {base_dir}")
+    
+    # Construct the directory path
+    module_dir_path = os.path.join(base_dir, '..', *tool_config['path'].split('.')[:-1])  # Go one level up and then to the path
+    module_dir_path = os.path.abspath(module_dir_path)  # Get absolute path
+    logger.debug(f"Module directory path: {module_dir_path}")
+    
+    file_path = os.path.join(module_dir_path, tool_config['metadata_file'])
     logger.debug(f"Checking metadata file at: {file_path}")
     
     if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
