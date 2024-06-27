@@ -1,66 +1,42 @@
 import pytest
 from unittest.mock import patch, MagicMock
-from services.tool_registry import ToolFile
-from features.quizzify.tools import URLLoader, BytesFilePDFLoader, Document  # Adjust the import path as necessary
+from features.quizzify.tools import YoutubeTranscriptLoader, Document, VideoTranscriptError, WebPageLoader
 
-@pytest.fixture
-def pdf_loader():
-    return BytesFilePDFLoader
-
-@pytest.fixture
-def url_loader(pdf_loader):
-    return URLLoader(file_loader=pdf_loader, expected_file_type="pdf")
-
-@patch('requests.get')
-def test_load_pdf_from_url(mock_get, url_loader):
+@patch('features.quizzify.tools.YoutubeLoader.from_youtube_url')
+def test_youtube_transcript_loader(mock_youtube_loader):
+    mock_url = "https://www.youtube.com/watch?v=example"
+    mock_video_urls = [mock_url]
     
-    pdf_file_path = "features/quizzify/tests/test.pdf"
+    # Mock document
+    mock_document = MagicMock(spec=Document)
+    mock_document.metadata = {'author': 'Author', 'title': 'Title', 'length': 100}
     
-    with open(pdf_file_path, 'rb') as file:
-        mock_pdf_content = file.read()
+    # Mock the loader's load method
+    mock_loader_instance = MagicMock()
+    mock_loader_instance.load.return_value = [mock_document]
+    mock_youtube_loader.return_value = mock_loader_instance
     
-    # Mocking the response of requests.get
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.content = mock_pdf_content
-    mock_get.return_value = mock_response
-
-    # The URL you're testing with (doesn't matter in this case since it's mocked)
-    test_url = "https://example.com/test.pdf"
-
-    # Assuming your Document class has a simple structure for this example
-    expected_document = Document(page_content="Mock PDF Content", metadata={"source": "pdf", "page_number": 1})
-
-    # Run the loader
-    documents = url_loader.load([test_url])
-
-    # Verify the results
-    assert isinstance(documents, list)
+    loader  = YoutubeTranscriptLoader(video_urls=mock_video_urls)
+    documents = loader.load()
+    
     assert len(documents) == 1
+    assert documents[0].metadata['author'] == 'Author'
 
-@patch('requests.get')
-def test_load_pdf_from_url(mock_get):
-    # Simulate reading a local PDF file or use mock PDF content
-    pdf_file_path = "features/quizzify/tests/test.pdf"
-    with open(pdf_file_path, 'rb') as pdf_file:
-        pdf_content = pdf_file.read()
 
-    # Mocking the response of requests.get to simulate downloading the PDF
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.content = pdf_content
-    mock_get.return_value = mock_response
-
-    # The specific URL you want to test with
-    test_url = "https://firebasestorage.googleapis.com/v0/b/kai-ai-f63c8.appspot.com/o/uploads%2F510f946e-823f-42d7-b95d-d16925293946-Linear%20Regression%20Stat%20Yale.pdf?alt=media&token=caea86aa-c06b-4cde-9fd0-42962eb72ddd"
-    tool_file = ToolFile(url=test_url, filePath = None, filename = None)
+@patch('features.quizzify.tools.WebBaseLoader')
+def test_webpage_loader(mock_web_loader):
+    mock_url = "https://www.apple.com/apple-intelligence/?mtid=209251kg40341&aosid=p238&mnid=s2v2gHuUw-dc_mtid_209251kg40341_pcrid_702087218873_pgrid_160690191302_pexid__&cid=wwa-ca-kwgo-features-slid-----"
+    mock_web_urls = [mock_url]
     
-    # Instantiate URLLoader class 
-    url_loader_instance = URLLoader(BytesFilePDFLoader, expected_file_type="pdf")
-
-    # Assuming you have a URL loader or similar functionality in your application
-    documents = url_loader_instance.load([tool_file])
+    # Mock document
+    mock_document = MagicMock(spec=Document)
     
-    # Verify the results
-    assert isinstance(documents, list)
+    # Mock the loader's load method
+    mock_loader_instance = MagicMock()
+    mock_loader_instance.load.return_value = [mock_document]
+    mock_web_loader.return_value = mock_loader_instance
+    
+    loader = WebPageLoader(web_urls=mock_web_urls)
+    documents = loader.load()
+    
     assert len(documents) == 1

@@ -1,13 +1,13 @@
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Union
 from io import BytesIO
 from fastapi import UploadFile
 from pypdf import PdfReader
 from urllib.parse import urlparse
 import requests
 import os
-import json
-import time
-
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'services')))
+from langchain_community.document_loaders import TextLoader, YoutubeLoader, WebBaseLoader
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
@@ -16,10 +16,9 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.pydantic_v1 import BaseModel, Field
-
 from services.logger import setup_logger
 from services.tool_registry import ToolFile
-from api.error_utilities import LoaderError
+from api.error_utilities import LoaderError, VideoTranscriptError
 
 relative_path = "features/quzzify"
 
@@ -122,9 +121,29 @@ class LocalFileLoader:
 
         return documents
 
+class TextFileLoader:
+    def __init__(self, files:List[Tuple[BytesIO, str]] ):
+        self.files = files
+    def load(self) -> List[Document]:
+        #documents = []
+        #text_loader_kwargs = {'autodetect_encoding':True}
+        for file, file_type in self.files:
+            logger.debug(f"Loading file of type: {file_type}")
+            if file_type.lower() == "txt":
+                try:
+                    #file.seek(0)
+                    loader = TextLoader(file)
+                    loaded_documents = loader.load()
+                except Exception as e:
+                    logger.error(f"Error loading text file: {e}")
+                    raise e
+            else:
+                raise ValueError(f"Unsupported file type: {file_type}")
+        return loaded_documents
+
 class URLLoader:
-    def __init__(self, file_loader=None, expected_file_type="pdf", verbose=False):
-        self.loader = file_loader or BytesFilePDFLoader
+    def __init__(self, file_loader=None, expected_file_type="txt", verbose=False):
+        self.loader = file_loader
         self.expected_file_type = expected_file_type
         self.verbose = verbose
 
@@ -132,78 +151,153 @@ class URLLoader:
         queued_files = []
         documents = []
         any_success = False
-
         for tool_file in tool_files:
             try:
                 url = tool_file.url
                 response = requests.get(url)
                 parsed_url = urlparse(url)
                 path = parsed_url.path
-
                 if response.status_code == 200:
                     # Read file
                     file_content = BytesIO(response.content)
-
                     # Check file type
                     file_type = path.split(".")[-1]
                     if file_type != self.expected_file_type:
                         raise LoaderError(f"Expected file type: {self.expected_file_type}, but got: {file_type}")
-
                     # Append to Queue
-                    queued_files.append((file_content, file_type))
+                    queued_files.append((file_content,file_type))
                     if self.verbose:
                         logger.info(f"Successfully loaded file from {url}")
-
                     any_success = True  # Mark that at least one file was successfully loaded
                 else:
                     logger.error(f"Request failed to load file from {url} and got status code {response.status_code}")
-
             except Exception as e:
                 logger.error(f"Failed to load file from {url}")
                 logger.error(e)
                 continue
-
         # Pass Queue to the file loader if there are any successful loads
         if any_success:
             file_loader = self.loader(queued_files)
             documents = file_loader.load()
-
             if self.verbose:
                 logger.info(f"Loaded {len(documents)} documents")
-
         if not any_success:
             raise LoaderError("Unable to load any files from URLs")
-
         return documents
+    
+
+class YoutubeTranscriptLoader:
+    def __init__(self, video_urls: List[ToolFile]):
+        self.video_urls = video_urls
+
+    def load(self) -> List[Document]:
+        print("file in class:",self.video_urls)
+        for file in self.video_urls:
+            try:
+                loader = YoutubeLoader.from_youtube_url(file, add_video_info=True)
+                docs = loader.load()
+                #metadata = {
+                 #   "author": docs[0].metadata['author'],
+                  #  "title": docs[0].metadata.get("title"),
+                   # "length": docs[0].metadata.get("length"),
+                #}
+            except VideoTranscriptError as e:
+                logger.error(f"VideoTranscriptError: {str(e)} for URL: {file}")
+                raise
+            except Exception as e:
+                logger.error(f"An error occurred while processing video at {file}: {str(e)}")
+                raise VideoTranscriptError(f"Video transcript might be private or unavailable in 'en' or the URL is incorrect.", file) from e
+        return docs
+
+class WebPageLoader:
+    def __init__(self, web_urls: List[ToolFile]):
+        self.web_urls = web_urls
+
+    def load(self) -> List[Document]:
+        #documents = []
+        for file in self.web_urls:
+            try:
+                loader = WebBaseLoader(file)
+                docs = loader.load()
+            except Exception as e:
+                logger.error(f"An error occurred while processing web page at {file}: {str(e)}")
+                raise LoaderError(f"Error loading web page: {file}") from e
+        return docs
+
 
 class RAGpipeline:
-    def __init__(self, loader=None, splitter=None, vectorstore_class=None, embedding_model=None, verbose=False):
+    def __init__(self, 
+                 youtube_loader=None,
+                 txt_url_loader=None,
+                 web_loader=None, 
+                 splitter=None, 
+                 vectorstore_class=None, 
+                 embedding_model=None, 
+                 verbose=False):
         default_config = {
-            "loader": URLLoader(verbose = verbose), # Creates instance on call with verbosity
+            "text_url_loader": URLLoader(file_loader=TextFileLoader,verbose=verbose), # Creates instance on call
+            "web_loader":WebPageLoader,
+            "youtube_loader": YoutubeTranscriptLoader, # Creates instance on call
             "splitter": RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100),
             "vectorstore_class": Chroma,
-            "embedding_model": VertexAIEmbeddings(model='textembedding-gecko')
+            "embedding_model": VertexAIEmbeddings(model='textembedding-gecko', project='multigenquiz')
         }
-        self.loader = loader or default_config["loader"]
+        self.txt_url_loader = txt_url_loader or default_config["text_url_loader"]
+        self.youtube_loader = youtube_loader or default_config["youtube_loader"]
+        self.web_loader = web_loader or default_config["web_loader"]
         self.splitter = splitter or default_config["splitter"]
         self.vectorstore_class = vectorstore_class or default_config["vectorstore_class"]
         self.embedding_model = embedding_model or default_config["embedding_model"]
         self.verbose = verbose
 
-    def load_PDFs(self, files) -> List[Document]:
-        if self.verbose:
-            logger.info(f"Loading {len(files)} files")
-            logger.info(f"Loader type used: {type(self.loader)}")
+    def load_documents(self, files) -> List[Document]:
+        documents = []
+        #pdf_file_urls = [file for file in files if isinstance(file, ToolFile) and file.url.lower().endswith('.pdf')]
+        text_file_urls = [file for file in files if isinstance(file, ToolFile) and file.url.lower().endswith('.txt')]
+        #print(type(files[0]))
+        youtube_urls = [file.url for file in files if isinstance(file, ToolFile) and 'youtube' in file.url.lower()]
+        web_urls = [
+            file.url for file in files if isinstance(file, ToolFile) and file.url.lower().startswith('http') 
+            and not text_file_urls and not youtube_urls
+        ]
+        # Check for multiple formats
         
-        logger.debug(f"Loader is a: {type(self.loader)}")
-        
-        try:
-            total_loaded_files = self.loader.load(files)
-        except LoaderError as e:
-            logger.error(f"Loader experienced error: {e}")
-            raise LoaderError(e)
+        if text_file_urls:
+            print("Text URLs found:", text_file_urls)
+            try:
+                text_documents = self.txt_url_loader.load(text_file_urls)
+                documents.extend(text_documents)
+                print("Text Documents Found:", text_documents)
+            except Exception as e:
+                logger.error(f"An error occurred while loading text files: {str(e)}")
+                raise LoaderError("Error loading text files") from e
+
+        if youtube_urls:
+            print("YouTube URLs found:", youtube_urls)
+            try:
+                youtube_load_instance = self.youtube_loader(youtube_urls) 
+                youtube_documents = youtube_load_instance.load()
+                documents.extend(youtube_documents)
+                print("Loaded documents from YouTube:", youtube_documents)
+            except VideoTranscriptError as e:
+                logger.error(f"VideoTranscriptError: {str(e)}")
+                raise LoaderError("Error loading YouTube transcripts") from e
+            except Exception as e:
+                logger.error(f"An error occurred while loading YouTube transcripts: {str(e)}")
+                raise LoaderError("Unexpected error loading YouTube transcripts") from e
+      
+        if web_urls:
+            print("Web URLs found:", web_urls)
+            try:
+                web_loader_instance = self.web_loader(web_urls)
+                web_documents = web_loader_instance.load()
+                documents.extend(web_documents)
+                print("Loaded documents from web URLs:", web_documents)
+            except Exception as e:
+                logger.error(f"An error occurred while loading web URLs: {str(e)}")
+                raise LoaderError("Error loading web URLs") from e
             
-        return total_loaded_files
+        return documents
     
     def split_loaded_documents(self, loaded_documents: List[Document]) -> List[Document]:
         if self.verbose:

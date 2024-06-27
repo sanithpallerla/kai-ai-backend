@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from fastapi import UploadFile
 from services.logger import setup_logger
 from typing import List, Any, Optional, Dict
 from api.error_utilities import InputValidationError
@@ -17,6 +18,7 @@ class BaseTool(BaseModel):
     inputs: List[ToolInput]
 
 class ToolFile(BaseModel):
+    #file: Optional[UploadFile] = None
     filePath: Optional[str] = None
     url: str
     filename: Optional[str] = None
